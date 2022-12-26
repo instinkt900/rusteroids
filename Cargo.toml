@@ -1,0 +1,20 @@
+[package]
+name = "rusteroids"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy = "0.9.1"
+bevy_prototype_debug_lines = "0.9"
+rand = "0.8.5"
+rand_pcg = "0.3.1"
+
+# Enable a small amount of optimization in debug mode
+[profile.dev]
+opt-level = 1
+
+# Enable high optimizations for dependencies (incl. Bevy), but not for our code:
+[profile.dev.package."*"]
+opt-level = 3
