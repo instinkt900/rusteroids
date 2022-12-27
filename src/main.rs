@@ -57,8 +57,8 @@ fn setup(mut commands: Commands) {
     });
     commands.spawn((Ship { fire_delay: Duration::from_millis(0) }, Radius(SHIP_RADIUS), Mass { scale: 1.0 }, Transform::from_xyz(0.0, 300.0, 0.0), Velocity(Vec2::new(0.0,0.0))));
     commands.spawn((Planet, Radius( 30.0 ), Transform::from_xyz(0.0, 0.0, 0.0)));
-    //commands.spawn((Planet{ radius: 30.0 }, Transform::from_xyz(200.0, -100.0, 0.0)));
-    //commands.spawn((Planet{ radius: 30.0 }, Transform::from_xyz(-200.0, -100.0, 0.0)));
+    commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(200.0, -100.0, 0.0)));
+    commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(-200.0, -100.0, 0.0)));
     commands.insert_resource(AsteroidTimer{ duration: Duration::from_secs(5) });
 }
 
@@ -232,20 +232,40 @@ fn ship_render(query: Query<&Transform, With<Ship>>, mut lines: ResMut<DebugLine
     }
 }
 
+fn draw_circle(lines: &mut ResMut<DebugLines>, position: Vec3, radius: f32, color: Color, segments: u32) {
+    let mut prev_point = position + Vec3::new(radius, 0.0, 0.0);
+    for i in 1..segments {
+        let angle = 2.0 * std::f32::consts::PI * (i as f32) / (segments as f32);
+        let x = radius * angle.cos();
+        let y = radius * angle.sin();
+        let this_point = position + Vec3::new(x, y, 0.0);
+        lines.line_colored(prev_point, this_point, 0.0, color);
+        prev_point = this_point;
+    }
+    lines.line_colored(prev_point, position + Vec3::new(radius, 0.0, 0.0), 0.0, color);
+}
+
+fn draw_irregular_circle(lines: &mut ResMut<DebugLines>, seed: u64, position: Vec3, radius_min: f32, radius_max: f32, color: Color, segments: u32) {
+    let mut rng = Pcg32::seed_from_u64(seed);
+    let first_point = position + Vec3::new(rng.gen_range(radius_min..radius_max), 0.0, 0.0);
+    let mut prev_point = first_point;
+    for i in 1..segments {
+        let point_radius = rng.gen_range(radius_min..radius_max);
+        let angle = 2.0 * std::f32::consts::PI * (i as f32) / (segments as f32);
+        let x = point_radius * angle.cos();
+        let y = point_radius * angle.sin();
+        let this_point = position + Vec3::new(x, y, 0.0);
+        lines.line_colored(prev_point, this_point, 0.0, color);
+        prev_point = this_point;
+    }
+    lines.line_colored(prev_point, first_point, 0.0, Color::GREEN);
+}
+
 fn planet_render(query: Query<(&Radius, &Transform), With<Planet>>, mut lines: ResMut<DebugLines>) {
     for (planet_radius, transform) in &query {
         let position = transform.translation;
         let radius = **planet_radius;
-        let mut prev_point = position + Vec3::new(radius, 0.0, 0.0);
-        for i in 1..PLANET_POINT_COUNT {
-            let angle = 2.0 * std::f32::consts::PI * (i as f32) / (PLANET_POINT_COUNT as f32);
-            let x = radius * angle.cos();
-            let y = radius * angle.sin();
-            let this_point = position + Vec3::new(x, y, 0.0);
-            lines.line_colored(prev_point, this_point, 0.0, Color::GREEN);
-            prev_point = this_point;
-        }
-        lines.line_colored(prev_point, position + Vec3::new(radius, 0.0, 0.0), 0.0, Color::GREEN);
+        draw_circle(&mut lines, position, radius, Color::GREEN, PLANET_POINT_COUNT);
     }
 }
 
@@ -253,37 +273,15 @@ fn bullet_render(query: Query<(&Radius, &Transform), With<Bullet>>, mut lines: R
     for (radius, transform) in &query {
         let position = transform.translation;
         let radius = **radius;
-        let mut prev_point = position + Vec3::new(radius, 0.0, 0.0);
-        for i in 1..BULLET_POINT_COUNT {
-            let angle = 2.0 * std::f32::consts::PI * (i as f32) / (BULLET_POINT_COUNT as f32);
-            let x = radius * angle.cos();
-            let y = radius * angle.sin();
-            let this_point = position + Vec3::new(x, y, 0.0);
-            lines.line_colored(prev_point, this_point, 0.0, Color::GREEN);
-            prev_point = this_point;
-        }
-        lines.line_colored(prev_point, position + Vec3::new(radius, 0.0, 0.0), 0.0, Color::GREEN);
+        draw_circle(&mut lines, position, radius, Color::GREEN, BULLET_POINT_COUNT);
     }
 }
 
 fn asteroid_render(query: Query<(&Radius, &Transform, &Asteroid)>, mut lines: ResMut<DebugLines>) {
     for (radius, transform, asteroid) in &query {
-        let mut rng = Pcg32::seed_from_u64(asteroid.seed);
         let position = transform.translation;
         let radius = **radius;
-        let point_radius = radius;// + rng.gen_range(-1.0..1.0);
-        let first_point = position + Vec3::new(point_radius + rng.gen_range(-2.0..2.0), rng.gen_range(-2.0..2.0), 0.0);
-        let mut prev_point = first_point;
-        for i in 1..ASTEROID_POINT_COUNT {
-            let point_radius = radius;// + rng.gen_range(-1.0..1.0);
-            let angle = 2.0 * std::f32::consts::PI * (i as f32) / (ASTEROID_POINT_COUNT as f32);
-            let x = point_radius * angle.cos();
-            let y = point_radius * angle.sin();
-            let this_point = position + Vec3::new(x + rng.gen_range(-2.0..2.0), y + rng.gen_range(-2.0..2.0), 0.0);
-            lines.line_colored(prev_point, this_point, 0.0, Color::GREEN);
-            prev_point = this_point;
-        }
-        lines.line_colored(prev_point, first_point, 0.0, Color::GREEN);
+        draw_irregular_circle(&mut lines, asteroid.seed, position, radius - 2.0, radius + 2.0, Color::GREEN, ASTEROID_POINT_COUNT);
     }
 }
 
