@@ -36,7 +36,7 @@ const PLANET_START_MASS: f32 = 500.0;
 const PLANET_RADIUS_CONSUME_SCALE: f32 = 0.1;
 const PLANET_MASS_CONSUME_SCALE: f32 = 1.0;
 
-const ASTEROID_SPAWN_DISTANCE: f32 = 320.0;
+const ASTEROID_SPAWN_DISTANCE: f32 = 640.0;
 const ASTEROID_LIFETIME_MS: u64 = 30000;
 const ASTEROID_SPAWN_DELAY_MIN_MS: u64 = 2000;
 const ASTEROID_SPAWN_DELAY_MAX_MS: u64 = 4000;
@@ -52,6 +52,11 @@ const ASTEROID_FRACTURE_MASS_FACTOR: f32 = 0.2;     // each broken part has F ma
 const ASTEROID_FRACTURE_MIN_RADIUS: f32 = 4.0;      // any asteroid smaller than this does not fracture
 const ASTEROID_FRACTURE_VEL_MIN: f32 = 10.0;        // min velocity to randomly apply to each fractured part
 const ASTEROID_FRACTURE_VEL_MAX: f32 = 40.0;        // max velocity to randomly apply to each fractured part
+
+const TRAIL_MAX_LIFE_MS: u64 = 3000;
+
+const EXPLOSION_MAX_LIFE_MS: u64 = 500;
+const EXPLOSION_MAX_RADIUS: f32 = 40.0;
 
 #[derive(Resource, Default)]
 struct AsteroidTimer { duration: Duration }
@@ -80,12 +85,32 @@ struct Asteroid { seed: u64 }
 #[derive(Component, Deref, DerefMut)]
 struct Velocity(Vec2);
 
+#[derive(Component)]
+struct Trail { last_pos: Vec3 }
+
+#[derive(Component)]
+struct TrailLine {
+    start: Vec3,
+    end: Vec3,
+    alpha: f32
+}
+
+#[derive(Component)]
+struct Explosion;
+
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2dBundle {
         transform: Transform::from_xyz(0.0, 0.0, 5.0),
         ..Default::default()
     });
-    commands.spawn((Ship { fire_delay: Duration::from_millis(0) }, Radius(SHIP_RADIUS), Mass(SHIP_MASS), Transform::from_xyz(0.0, 300.0, 0.0), Velocity(Vec2::new(0.0,0.0))));
+
+    let player_start = Vec3::new(0.0, 300.0, 0.0);
+    commands.spawn((Ship { fire_delay: Duration::from_millis(0) },
+                    Radius(SHIP_RADIUS),
+                    Mass(SHIP_MASS),
+                    Transform::from_translation(player_start),
+                    Velocity(Vec2::new(0.0,0.0)),
+                    Trail { last_pos: player_start }));
     commands.spawn((Planet, Radius(PLANET_START_RADIUS), Mass(PLANET_START_MASS), Transform::from_xyz(0.0, 0.0, 0.0)));
     //commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(200.0, -100.0, 0.0)));
     //commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(-200.0, -100.0, 0.0)));
@@ -216,6 +241,10 @@ fn asteroid_collision(mut commands: Commands, asteroid_query: Query<(Entity, &Ra
             if distance < (asteroid_radius + bullet_radius) {
                 commands.entity(asteroid_entity).despawn();
                 commands.entity(bullet_entity).despawn();
+                commands.spawn((Explosion,
+                                Transform::from_translation(asteroid_transform.translation),
+                                Velocity(Vec2::new(asteroid_velocity.x, asteroid_velocity.y)),
+                                Lifetime(Duration::from_millis(EXPLOSION_MAX_LIFE_MS))));
                 if asteroid_radius > ASTEROID_FRACTURE_MIN_RADIUS {
                     let mut rng = rand::thread_rng();
                     let new_radius = asteroid_radius * ASTEROID_FRACTURE_RADIUS_FACTOR;
@@ -341,6 +370,32 @@ fn asteroid_render(query: Query<(&Radius, &Transform, &Asteroid)>, mut lines: Re
     }
 }
 
+fn draw_trail(mut commands: Commands, mut query: Query<(&Transform, &mut Trail)>) {
+    for (transform, mut trail) in &mut query {
+        commands.spawn((TrailLine{ start: transform.translation, end: trail.last_pos, alpha: 0.2 },
+                        Lifetime(Duration::from_millis(TRAIL_MAX_LIFE_MS))));
+        //lines.line_colored(trail.last_pos, transform.translation, 3.0, Color::rgba(1.0, 1.0, 1.0, 0.1));
+        trail.last_pos = transform.translation;
+    }
+}
+
+fn draw_trail_lines(query: Query<(&TrailLine, &Lifetime)>, mut lines: ResMut<DebugLines>) {
+    for (line, lifetime) in &query {
+        let alpha = line.alpha * (lifetime.as_millis() as f32 / TRAIL_MAX_LIFE_MS as f32);
+        lines.line_colored(line.start, line.end, 0.0, Color::rgba(1.0, 1.0, 1.0, alpha));
+    }
+}
+
+fn draw_explosion(query: Query<(&Transform, &Lifetime), With<Explosion>>, mut lines: ResMut<DebugLines>) {
+    for (transform, lifetime) in &query {
+        let age = (EXPLOSION_MAX_LIFE_MS - lifetime.as_millis() as u64) as f32;
+        let factor = 1.0 - (1.0 - age / EXPLOSION_MAX_LIFE_MS as f32).powf(2.0);
+        let radius = factor * EXPLOSION_MAX_RADIUS;
+        let alpha = 0.5 * lifetime.as_millis() as f32 / EXPLOSION_MAX_LIFE_MS as f32;
+        draw_circle(&mut lines, transform.translation, radius, Color::rgba(1.0, 1.0, 1.0, alpha), 20);
+    }
+}
+
 fn main() {
     App::new()
     .add_plugins(DefaultPlugins)
@@ -364,5 +419,8 @@ fn main() {
     .add_system(planet_render)
     .add_system(bullet_render)
     .add_system(asteroid_render)
+    .add_system(draw_trail)
+    .add_system(draw_trail_lines)
+    .add_system(draw_explosion)
     .run();
 }
