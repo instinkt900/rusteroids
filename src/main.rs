@@ -12,16 +12,21 @@ const SHIP_CORNERS: [Vec3; 3] = [
 ];
 
 const TIME_STEP: f32 = 1.0 / 60.0;
+
 const SHIP_ROTATION_SPEED: f32 = 0.05;
-const SHIP_MAX_THRUST: f32 = 5.0;
-const GRAVITY_SCALE: f32 = 80000.0;
-const PLANET_POINT_COUNT: u32 = 20;
-const BULLET_VELOCITY: f32 = 600.0;
+const BULLET_VELOCITY: f32 = 200.0;
+const SHIP_MAX_THRUST: f32 = 1.25;
+
+const GRAVITY_SCALE: f32 = 20000.0;
+
 const SHIP_RADIUS: f32 = 10.0;
 const BULLET_RADIUS: f32 = 1.0;
+
+const PLANET_POINT_COUNT: u32 = 20;
 const ASTEROID_POINT_COUNT: u32 = 15;
-const ASTEROID_SPAWN_DISTANCE: f32 = 640.0;
 const BULLET_POINT_COUNT: u32 = 4;
+
+const ASTEROID_SPAWN_DISTANCE: f32 = 640.0;
 
 #[derive(Resource, Default)]
 struct AsteroidTimer { duration: Duration }
@@ -57,8 +62,8 @@ fn setup(mut commands: Commands) {
     });
     commands.spawn((Ship { fire_delay: Duration::from_millis(0) }, Radius(SHIP_RADIUS), Mass { scale: 1.0 }, Transform::from_xyz(0.0, 300.0, 0.0), Velocity(Vec2::new(0.0,0.0))));
     commands.spawn((Planet, Radius( 30.0 ), Transform::from_xyz(0.0, 0.0, 0.0)));
-    commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(200.0, -100.0, 0.0)));
-    commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(-200.0, -100.0, 0.0)));
+    //commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(200.0, -100.0, 0.0)));
+    //commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(-200.0, -100.0, 0.0)));
     commands.insert_resource(AsteroidTimer{ duration: Duration::from_secs(5) });
 }
 
