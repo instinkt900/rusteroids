@@ -28,35 +28,42 @@ const SHIP_FIRE_DELAY: u64 = 100;
 
 const BULLET_VELOCITY: f32 = 300.0;
 const BULLET_RADIUS: f32 = 1.0;
-const BULLET_MASS: f32 = 20.0;
+const BULLET_MASS: f32 = 10.0;
 const BULLET_LIFETIME_MS: u64 = 3000;
 
 const PLANET_START_RADIUS: f32 = 30.0;
 const PLANET_START_MASS: f32 = 500.0;
-const PLANET_RADIUS_CONSUME_SCALE: f32 = 0.1;
-const PLANET_MASS_CONSUME_SCALE: f32 = 1.0;
+const PLANET_RADIUS_CONSUME_SCALE: f32 = 0.3;
+const PLANET_MASS_CONSUME_SCALE: f32 = 3.0;
 
 const ASTEROID_SPAWN_DISTANCE: f32 = 640.0;
-const ASTEROID_LIFETIME_MS: u64 = 30000;
+const ASTEROID_LIFETIME_MS: u64 = 60000;
 const ASTEROID_SPAWN_DELAY_MIN_MS: u64 = 2000;
 const ASTEROID_SPAWN_DELAY_MAX_MS: u64 = 4000;
 const ASTEROID_RADIUS_MIN: f32 = 10.0;
 const ASTEROID_RADIUS_MAX: f32 = 20.0;
 const ASTEROID_MASS_MIN: f32 = 10.0;
 const ASTEROID_MASS_MAX: f32 = 20.0;
-const ASTEROID_VELOCITY_MIN: f32 = 10.0;
-const ASTEROID_VELOCITY_MAX: f32 = 40.0;
+const ASTEROID_VELOCITY_MIN: f32 = 20.0;
+const ASTEROID_VELOCITY_MAX: f32 = 60.0;
+const ASTEROID_DRAG_CONSTANT: f32 = 300.0;
+const ASTEROID_DRAG_RADIUS_CONTRIBUTION: f32 = 5.0;
 const ASTEROID_FRACTURE_COUNT: u32 = 3;             // broken asteroids break into N parts
 const ASTEROID_FRACTURE_RADIUS_FACTOR: f32 = 0.3;   // each broken part has F radius of its parent
-const ASTEROID_FRACTURE_MASS_FACTOR: f32 = 0.2;     // each broken part has F mass of its parent
+const ASTEROID_FRACTURE_MASS_FACTOR: f32 = 0.3;     // each broken part has F mass of its parent
 const ASTEROID_FRACTURE_MIN_RADIUS: f32 = 4.0;      // any asteroid smaller than this does not fracture
 const ASTEROID_FRACTURE_VEL_MIN: f32 = 10.0;        // min velocity to randomly apply to each fractured part
-const ASTEROID_FRACTURE_VEL_MAX: f32 = 40.0;        // max velocity to randomly apply to each fractured part
+const ASTEROID_FRACTURE_VEL_MAX: f32 = 30.0;        // max velocity to randomly apply to each fractured part
 
 const TRAIL_MAX_LIFE_MS: u64 = 3000;
+const TRAIL_START_ALPHA: f32 = 0.2;
 
 const EXPLOSION_MAX_LIFE_MS: u64 = 500;
 const EXPLOSION_MAX_RADIUS: f32 = 40.0;
+
+const GRAVITY_VIS_RATE: f32 = 0.5;
+const GRAVITY_VIS_MASS_FACTOR: f32 = 1.002;
+const GRAVITY_VIS_SIZE: f32 = 30.0;
 
 #[derive(Resource, Default)]
 struct AsteroidTimer { duration: Duration }
@@ -98,6 +105,11 @@ struct TrailLine {
 #[derive(Component)]
 struct Explosion;
 
+#[derive(Component)]
+struct GravityVis {
+    radius: f32
+}
+
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2dBundle {
         transform: Transform::from_xyz(0.0, 0.0, 5.0),
@@ -111,7 +123,11 @@ fn setup(mut commands: Commands) {
                     Transform::from_translation(player_start),
                     Velocity(Vec2::new(0.0,0.0)),
                     Trail { last_pos: player_start }));
-    commands.spawn((Planet, Radius(PLANET_START_RADIUS), Mass(PLANET_START_MASS), Transform::from_xyz(0.0, 0.0, 0.0)));
+    commands.spawn((Planet,
+                    Radius(PLANET_START_RADIUS),
+                    Mass(PLANET_START_MASS),
+                    Transform::from_xyz(0.0, 0.0, 0.0),
+                    GravityVis { radius: 0.0 } ));
     //commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(200.0, -100.0, 0.0)));
     //commands.spawn((Planet, Radius( 10.0 ), Transform::from_xyz(-200.0, -100.0, 0.0)));
     commands.insert_resource(AsteroidTimer{ duration: Duration::from_secs(5) });
@@ -163,6 +179,19 @@ fn apply_gravity(planet_query: Query<(&Transform, &Mass), With<Planet>>, mut ent
             entity_velocity.x += gravity_vector.x * gravity_force * TIME_STEP;
             entity_velocity.y += gravity_vector.y * gravity_force * TIME_STEP;
         }
+    }
+}
+
+fn apply_asteroid_gravity(mut query: Query<(&Transform, &Radius, &Mass, &mut Velocity), With<Asteroid>>) {
+    let mut iter = query.iter_combinations_mut();
+    while let Some([(transform1, Radius(radius1), Mass(mass1), mut velocity1), (transform2, Radius(radius2), Mass(mass2), mut velocity2)]) = iter.fetch_next() {
+        let gravity_vector = (transform1.translation - transform2.translation).normalize();
+        let distance = f32::max(radius1 + radius2, (transform1.translation - transform2.translation).length());
+        let gravity_force = GRAVITY * mass1 * mass2 / f32::max(1.0, distance * distance);
+        velocity1.x -= gravity_vector.x * gravity_force * TIME_STEP;
+        velocity1.y -= gravity_vector.y * gravity_force * TIME_STEP;
+        velocity2.x += gravity_vector.x * gravity_force * TIME_STEP;
+        velocity2.y += gravity_vector.y * gravity_force * TIME_STEP;
     }
 }
 
@@ -306,6 +335,24 @@ fn asteroid_spawner(mut commands: Commands, mut asteroid_timer: ResMut<AsteroidT
     }
 }
 
+fn asteroid_drag(planet_query: Query<(&Transform, &Radius), With<Planet>>, mut asteroid_query: Query<(&Transform, &Radius, &mut Velocity), With<Asteroid>>) {
+    for (planet_transform, planet_radius) in &planet_query {
+        let planet_radius = **planet_radius;
+        for (asteroid_transform, asteroid_radius, mut asteroid_velocity) in &mut asteroid_query {
+            let asteroid_radius = **asteroid_radius;
+            let distance = Vec3::distance(planet_transform.translation, asteroid_transform.translation) - planet_radius;
+            let drag_factor = TIME_STEP * (ASTEROID_DRAG_CONSTANT + asteroid_radius * ASTEROID_DRAG_RADIUS_CONTRIBUTION) / distance;
+            let mut asteroid_speed = asteroid_velocity.length();
+            if asteroid_speed > drag_factor {
+                asteroid_speed -= drag_factor;
+            } else {
+                asteroid_speed = 0.0;
+            }
+            **asteroid_velocity = asteroid_velocity.normalize() * asteroid_speed;
+        }
+    }
+}
+
 fn ship_render(query: Query<&Transform, With<Ship>>, mut lines: ResMut<DebugLines>) {
     for transform in &query {
         let points: Vec<Vec3> = SHIP_CORNERS.iter().map(|point| transform.transform_point(*point)).collect();
@@ -372,9 +419,8 @@ fn asteroid_render(query: Query<(&Radius, &Transform, &Asteroid)>, mut lines: Re
 
 fn draw_trail(mut commands: Commands, mut query: Query<(&Transform, &mut Trail)>) {
     for (transform, mut trail) in &mut query {
-        commands.spawn((TrailLine{ start: transform.translation, end: trail.last_pos, alpha: 0.2 },
+        commands.spawn((TrailLine{ start: transform.translation, end: trail.last_pos, alpha: TRAIL_START_ALPHA },
                         Lifetime(Duration::from_millis(TRAIL_MAX_LIFE_MS))));
-        //lines.line_colored(trail.last_pos, transform.translation, 3.0, Color::rgba(1.0, 1.0, 1.0, 0.1));
         trail.last_pos = transform.translation;
     }
 }
@@ -396,6 +442,25 @@ fn draw_explosion(query: Query<(&Transform, &Lifetime), With<Explosion>>, mut li
     }
 }
 
+fn update_gravity_vis(mut query: Query<(&Mass, &mut GravityVis)>) {
+    for (Mass(mass), mut gravity_vis) in &mut query {
+        let shrink = TIME_STEP * GRAVITY_VIS_RATE * GRAVITY_VIS_MASS_FACTOR.powf(*mass - PLANET_START_MASS);
+        if gravity_vis.radius > shrink {
+            gravity_vis.radius -= shrink;
+        } else {
+            let remainder = shrink - gravity_vis.radius;
+            gravity_vis.radius = 1.0 - remainder;
+        }
+    }
+}
+
+fn visualise_gravity(query: Query<(&Transform, &Radius, &GravityVis)>, mut lines: ResMut<DebugLines>) {
+    for (transform, Radius(radius), gravity_vis) in &query {
+        let radius = radius + GRAVITY_VIS_SIZE * gravity_vis.radius;
+        draw_circle(&mut lines, transform.translation, radius, Color::rgba(1.0, 1.0, 1.0, 0.05), 40);
+    }
+}
+
 fn main() {
     App::new()
     .add_plugins(DefaultPlugins)
@@ -406,11 +471,14 @@ fn main() {
             .with_run_criteria(FixedTimestep::step(TIME_STEP as f64))
             .with_system(ship_control)
             .with_system(apply_gravity)
+            //.with_system(apply_asteroid_gravity)
             .with_system(apply_velocity)
             .with_system(fire_control)
             .with_system(lifetime_control)
             .with_system(space_clamp)
             .with_system(asteroid_spawner)
+            .with_system(asteroid_drag)
+            .with_system(update_gravity_vis)
             
     )
     .add_system(planet_colision)
@@ -422,5 +490,6 @@ fn main() {
     .add_system(draw_trail)
     .add_system(draw_trail_lines)
     .add_system(draw_explosion)
+    .add_system(visualise_gravity)
     .run();
 }
