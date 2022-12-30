@@ -1,12 +1,8 @@
 use bevy::prelude::*;
-use bevy::ecs::schedule::*;
-use bevy::time::FixedTimestep;
 use bevy::utils::Duration;
 use bevy_prototype_debug_lines::*;
 use rand_pcg::Pcg32;
 use rand::{Rng, SeedableRng};
-
-//const TIME_STEP: f32 = 1.0 / 60.0;
 
 // drawing constants
 const SHIP_CORNERS: [Vec3; 3] = [
@@ -29,13 +25,17 @@ const SHIP_FIRE_DELAY: u64 = 100;
 
 const BULLET_VELOCITY: f32 = 300.0;
 const BULLET_RADIUS: f32 = 1.0;
-const BULLET_MASS: f32 = 10.0;
+const BULLET_MASS: f32 = 15.0;
 const BULLET_LIFETIME_MS: u64 = 3000;
 
 const PLANET_START_RADIUS: f32 = 30.0;
 const PLANET_START_MASS: f32 = 500.0;
 const PLANET_RADIUS_CONSUME_SCALE: f32 = 0.3;
 const PLANET_MASS_CONSUME_SCALE: f32 = 5.0;
+const PLANET_MASS_COLLAPSE_TRIGGER: f32 = 2500.0;
+const PLANET_COLLAPSE_TIME_MS: f32 = 1500.0;
+const PLANET_COLLAPSE_SIZE: f32 = 2.0;
+const PLANET_COLLAPSE_MASS: f32 = 30000.0; 
 
 const ASTEROID_SPAWN_DISTANCE: f32 = 640.0;
 const ASTEROID_LIFETIME_MS: u64 = 60000;
@@ -48,7 +48,7 @@ const ASTEROID_MASS_MAX: f32 = 20.0;
 const ASTEROID_VELOCITY_MIN: f32 = 20.0;
 const ASTEROID_VELOCITY_MAX: f32 = 60.0;
 const ASTEROID_DRAG_CONSTANT: f32 = 300.0;
-const ASTEROID_DRAG_RADIUS_CONTRIBUTION: f32 = 5.0;
+const ASTEROID_DRAG_RADIUS_CONTRIBUTION: f32 = 5.0; // factor controlling how influential the radius is on the drag
 const ASTEROID_FRACTURE_COUNT: u32 = 3;             // broken asteroids break into N parts
 const ASTEROID_FRACTURE_RADIUS_FACTOR: f32 = 0.3;   // each broken part has F radius of its parent
 const ASTEROID_FRACTURE_MASS_FACTOR: f32 = 0.3;     // each broken part has F mass of its parent
@@ -66,6 +66,8 @@ const GRAVITY_VIS_RATE: f32 = 0.5;
 const GRAVITY_VIS_MASS_FACTOR: f32 = 1.0015;
 const GRAVITY_VIS_SIZE: f32 = 30.0;
 
+const GAMEOVER_DELAY_MS: u64 = 3000;
+
 #[derive(Clone, Eq, PartialEq, Debug, Hash)]
 enum GameState {
     Title,
@@ -75,6 +77,25 @@ enum GameState {
 
 #[derive(Resource, Default)]
 struct AsteroidTimer { duration: Duration }
+
+#[derive(Resource, Default)]
+struct Game {
+    score: u32,
+    time: u64,
+    gameover_time: u64,
+    draw_trajectory: bool
+}
+
+impl Game {
+    fn new() -> Self {
+        Self {
+            score: 0,
+            time: 0,
+            gameover_time: 0,
+            draw_trajectory: false
+        }
+    }
+}
 
 #[derive(Component, Deref, DerefMut)]
 struct Lifetime(Duration);
@@ -86,7 +107,23 @@ struct Radius(f32);
 struct Mass(f32);
 
 #[derive(Component)]
-struct Planet;
+struct Planet {
+    collapsing: bool,
+    collapse_init_size: f32,
+    collapse_init_mass: f32,
+    collapse_timer: f32
+}
+
+impl Planet {
+    fn new() -> Self {
+        Self {
+            collapsing: false,
+            collapse_init_size: 0.0,
+            collapse_init_mass: 0.0,
+            collapse_timer: 0.0
+        }
+    }
+}
 
 #[derive(Component)]
 struct Ship { fire_delay: Duration }
@@ -117,6 +154,9 @@ struct Explosion;
 struct GravityVis {
     radius: f32
 }
+
+#[derive(Component)]
+struct DebugPlanetData;
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2dBundle {
@@ -156,7 +196,7 @@ fn teardown_title(mut commands: Commands, entities: Query<Entity, With<Text>>) {
     }
 }
 
-fn setup_playing(mut commands: Commands) {
+fn setup_playing(mut commands: Commands, mut game: ResMut<Game>) {
     let player_start = Vec3::new(0.0, 300.0, 0.0);
     commands.spawn((Ship { fire_delay: Duration::from_millis(0) },
                     Radius(SHIP_RADIUS),
@@ -164,20 +204,35 @@ fn setup_playing(mut commands: Commands) {
                     Transform::from_translation(player_start),
                     Velocity(Vec2::new(0.0,0.0)),
                     Trail { last_pos: player_start }));
-    commands.spawn((Planet,
+    commands.spawn((Planet::new(),
                     Radius(PLANET_START_RADIUS),
                     Mass(PLANET_START_MASS),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                     GravityVis { radius: 0.0 } ));
+
+    game.gameover_time = 0;
+    game.score = 0;
+    game.time = 0;
 }
 
-fn check_player(mut state: ResMut<State<GameState>>, query: Query<&Ship>) {
-    if query.is_empty() {
-        state.set(GameState::GameOver).unwrap();
+fn check_player(mut state: ResMut<State<GameState>>, query: Query<&Ship>, planet_query: Query<&Planet>, mut game: ResMut<Game>, time: Res<Time>) {
+    let mut game_over = query.is_empty();
+
+    for planet in &planet_query {
+        if planet.collapsing {
+            game_over = true;
+        }
+    }
+
+    if game_over {
+        game.gameover_time += time.delta().as_millis() as u64;
+        if game.gameover_time >= GAMEOVER_DELAY_MS {
+            state.set(GameState::GameOver).unwrap();
+        }
     }
 }
 
-fn teardown_playing(mut commands: Commands, entities: Query<Entity, Or<(With<Ship>, With<Planet>, With<Bullet>, With<Asteroid>, With<Explosion>, With<TrailLine>)>>) {
+fn teardown_playing(mut commands: Commands, entities: Query<Entity, Or<(With<Ship>, With<Planet>, With<Bullet>, With<Asteroid>, With<Explosion>, With<TrailLine>, With<Text>)>>) {
     for entity in &entities {
         commands.entity(entity).despawn_recursive();
     }
@@ -229,7 +284,7 @@ fn lifetime_control(mut commands: Commands, time: Res<Time>, mut query: Query<(E
     }
 }
 
-fn ship_control(mut query: Query<(&mut Transform, &mut Velocity), With<Ship>>, keyboard_input: Res<Input<KeyCode>>) {
+fn ship_control(mut query: Query<(&mut Transform, &mut Velocity), With<Ship>>, keyboard_input: Res<Input<KeyCode>>, mut game: ResMut<Game>) {
     for (mut transform, mut velocity) in &mut query {
         let mut direction = 0.0;
         if keyboard_input.pressed(KeyCode::Left) {
@@ -245,6 +300,10 @@ fn ship_control(mut query: Query<(&mut Transform, &mut Velocity), With<Ship>>, k
             velocity.x += thrust.x;
             velocity.y += thrust.y;
         }
+    }
+
+    if keyboard_input.just_pressed(KeyCode::H) {
+        game.draw_trajectory = !game.draw_trajectory;
     }
 }
 
@@ -262,18 +321,18 @@ fn apply_gravity(planet_query: Query<(&Transform, &Mass), With<Planet>>, mut ent
     }
 }
 
-fn apply_asteroid_gravity(mut query: Query<(&Transform, &Radius, &Mass, &mut Velocity), With<Asteroid>>, time: Res<Time>) {
-    let mut iter = query.iter_combinations_mut();
-    while let Some([(transform1, Radius(radius1), Mass(mass1), mut velocity1), (transform2, Radius(radius2), Mass(mass2), mut velocity2)]) = iter.fetch_next() {
-        let gravity_vector = (transform1.translation - transform2.translation).normalize();
-        let distance = f32::max(radius1 + radius2, (transform1.translation - transform2.translation).length());
-        let gravity_force = GRAVITY * mass1 * mass2 / f32::max(1.0, distance * distance);
-        velocity1.x -= gravity_vector.x * gravity_force * time.delta_seconds();
-        velocity1.y -= gravity_vector.y * gravity_force * time.delta_seconds();
-        velocity2.x += gravity_vector.x * gravity_force * time.delta_seconds();
-        velocity2.y += gravity_vector.y * gravity_force * time.delta_seconds();
-    }
-}
+// fn apply_asteroid_gravity(mut query: Query<(&Transform, &Radius, &Mass, &mut Velocity), With<Asteroid>>, time: Res<Time>) {
+//     let mut iter = query.iter_combinations_mut();
+//     while let Some([(transform1, Radius(radius1), Mass(mass1), mut velocity1), (transform2, Radius(radius2), Mass(mass2), mut velocity2)]) = iter.fetch_next() {
+//         let gravity_vector = (transform1.translation - transform2.translation).normalize();
+//         let distance = f32::max(radius1 + radius2, (transform1.translation - transform2.translation).length());
+//         let gravity_force = GRAVITY * mass1 * mass2 / f32::max(1.0, distance * distance);
+//         velocity1.x -= gravity_vector.x * gravity_force * time.delta_seconds();
+//         velocity1.y -= gravity_vector.y * gravity_force * time.delta_seconds();
+//         velocity2.x += gravity_vector.x * gravity_force * time.delta_seconds();
+//         velocity2.y += gravity_vector.y * gravity_force * time.delta_seconds();
+//     }
+// }
 
 fn apply_velocity(mut query: Query<(&mut Transform, &Velocity)>, time: Res<Time>) {
     for (mut transform, velocity) in &mut query {
@@ -319,8 +378,8 @@ fn fire_control(mut query: Query<(&mut Ship, &Transform)>, mut commands: Command
     }
 }
 
-fn planet_colision(mut commands: Commands, mut planet_query: Query<(&mut Radius, &mut Mass, &Transform), With<Planet>>, entity_query: Query<(Entity, &Radius, &Mass, &Transform, Option<&Bullet>), Without<Planet>>) {
-    for (mut planet_radius, mut planet_mass, planet_transform) in &mut planet_query {
+fn planet_colision(mut commands: Commands, mut planet_query: Query<(&mut Radius, &mut Mass, &Transform, &mut Planet)>, entity_query: Query<(Entity, &Radius, &Mass, &Transform, Option<&Bullet>), Without<Planet>>) {
+    for (mut planet_radius, mut planet_mass, planet_transform, mut planet) in &mut planet_query {
         let mut planet_radius_value = **planet_radius;
         let mut planet_mass_value = **planet_mass;
         for (entity, entity_radius, entity_mass, entity_transform, optional_bullet) in &entity_query {
@@ -335,8 +394,28 @@ fn planet_colision(mut commands: Commands, mut planet_query: Query<(&mut Radius,
                 }
             }
         }
-        **planet_radius = planet_radius_value;
-        **planet_mass = planet_mass_value;
+
+        if !planet.collapsing {
+            **planet_radius = planet_radius_value;
+            **planet_mass = planet_mass_value;
+            if **planet_mass >= PLANET_MASS_COLLAPSE_TRIGGER {
+                planet.collapsing = true;
+                planet.collapse_init_size = **planet_radius;
+                planet.collapse_init_mass = **planet_mass;
+                planet.collapse_timer = 0.0;
+            }
+        }
+    }
+}
+
+fn planet_collapse(mut planets: Query<(&mut Planet, &mut Radius, &mut Mass)>, time: Res<Time>) {
+    for (mut planet, mut radius, mut mass) in &mut planets {
+        if planet.collapsing {
+            planet.collapse_timer = f32::min(PLANET_COLLAPSE_TIME_MS, planet.collapse_timer + (time.delta().as_millis() as f32));
+            let factor = planet.collapse_timer / PLANET_COLLAPSE_TIME_MS;
+            **radius = PLANET_COLLAPSE_SIZE + (1.0 - factor.powf(8.0)) * (planet.collapse_init_size - PLANET_COLLAPSE_SIZE);
+            **mass = planet.collapse_init_mass + factor * (PLANET_COLLAPSE_MASS - planet.collapse_init_mass);
+        }
     }
 }
 
@@ -433,13 +512,52 @@ fn asteroid_drag(planet_query: Query<(&Transform, &Radius), With<Planet>>, mut a
     }
 }
 
-fn ship_render(query: Query<&Transform, With<Ship>>, mut lines: ResMut<DebugLines>) {
-    for transform in &query {
+fn gravity_velocity(pos1: Vec3, mass1: f32, pos2: Vec3, mass2: f32) -> Vec2 {
+    let delta = pos1 - pos2;
+    let direction = delta.normalize();
+    let distance = delta.length();
+    let force = GRAVITY * (mass1 * mass2) / f32::max(1.0, distance * distance);
+    return Vec2::new(direction.x * force, direction.y * force);
+}
+
+fn ship_render(query: Query<(&Transform, &Mass, &Velocity), With<Ship>>, planet_query: Query<(&Transform, &Mass), With<Planet>>, mut lines: ResMut<DebugLines>, game: Res<Game>) {
+    let (planet_transform, Mass(planet_mass)) = planet_query.single();
+    for (transform, Mass(mass), Velocity(velocity)) in &query {
         let points: Vec<Vec3> = SHIP_CORNERS.iter().map(|point| transform.transform_point(*point)).collect();
         for i in 0..points.len() {
             let point1 = points[i];
             let point2 = points[(i + 1) % points.len()];
             lines.line_colored(point1, point2, 0.0, Color::GREEN);
+        }
+
+        if game.draw_trajectory {
+            let step = 1.0 / 20.0;
+            let mut pos = transform.translation;
+            let mut vel = *velocity;
+            let mut start_vector = (planet_transform.translation - transform.translation).normalize();
+            let mut cumulative_angle = 0.0;
+            let orbit_radius = (planet_transform.translation - transform.translation).length();
+            let orbit_circumference = 2.0 * std::f32::consts::PI * orbit_radius;
+            let mut distance = f32::max(900.0, orbit_circumference);
+            while distance > 0.0 {
+                let line_start = pos;
+                let added_velocity = gravity_velocity(planet_transform.translation, *planet_mass, pos, *mass);
+                vel.x += added_velocity.x * step;
+                vel.y += added_velocity.y * step;
+                let travel = Vec2::new(vel.x * step, vel.y * step);
+                distance -= travel.length();
+                pos.x += travel.x;
+                pos.y += travel.y;
+                let new_vector = (planet_transform.translation - pos).normalize();
+                let d = start_vector.dot(new_vector);
+                let a = d.acos();
+                start_vector = new_vector;
+                cumulative_angle += a;
+                if cumulative_angle > (2.0 * std::f32::consts::PI) {
+                    break;
+                }
+                lines.line_colored(line_start, pos, 0.0, Color::rgba(1.0, 1.0, 0.0, 0.1));
+            }
         }
     }
 }
@@ -545,6 +663,7 @@ fn main() {
     App::new()
     .add_plugins(DefaultPlugins)
     .add_plugin(DebugLinesPlugin::default())
+    .insert_resource(Game::new())
     .insert_resource(AsteroidTimer{ duration: Duration::from_secs(5) })
     .add_state(GameState::Title)
     .add_startup_system(setup_camera)
@@ -563,21 +682,23 @@ fn main() {
         .with_system(lifetime_control)
         .with_system(space_clamp)
         .with_system(asteroid_spawner)
+        .with_system(planet_collapse)
         .with_system(update_gravity_vis)
         .with_system(check_player)
+
+        .with_system(ship_render)
+        .with_system(planet_render)
+        .with_system(bullet_render)
+        .with_system(asteroid_render)
+        .with_system(draw_trail)
+        .with_system(draw_trail_lines)
+        .with_system(draw_explosion)
+        .with_system(visualise_gravity)
     )
     .add_system_set(SystemSet::on_exit(GameState::Playing).with_system(teardown_playing))
     .add_system_set(SystemSet::on_enter(GameState::GameOver).with_system(setup_gameover))
     .add_system_set(SystemSet::on_update(GameState::GameOver).with_system(update_gameover))
     .add_system_set(SystemSet::on_exit(GameState::GameOver).with_system(teardown_gameover))
-    .add_system(ship_render)
-    .add_system(planet_render)
-    .add_system(bullet_render)
-    .add_system(asteroid_render)
-    .add_system(draw_trail)
-    .add_system(draw_trail_lines)
-    .add_system(draw_explosion)
-    .add_system(visualise_gravity)
     .add_system(bevy::window::close_on_esc)
     .run();
 }
