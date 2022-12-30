@@ -3,6 +3,7 @@ use bevy::utils::Duration;
 use bevy_prototype_debug_lines::*;
 use rand_pcg::Pcg32;
 use rand::{Rng, SeedableRng};
+use num_format::{Locale, ToFormattedString};
 
 // drawing constants
 const SHIP_CORNERS: [Vec3; 3] = [
@@ -17,8 +18,8 @@ const ASTEROID_RADIUS_VARIANCE: f32 = 2.0;
 
 const GRAVITY: f32 = 250.0;
 
-const SHIP_ROTATION_SPEED: f32 = 0.07;
-const SHIP_MAX_THRUST: f32 = 1.25;
+const SHIP_ROTATION_SPEED: f32 = 4.2;
+const SHIP_MAX_THRUST: f32 = 75.0;
 const SHIP_RADIUS: f32 = 10.0;
 const SHIP_MASS: f32 = 10.0;
 const SHIP_FIRE_DELAY: u64 = 100;
@@ -66,6 +67,10 @@ const GRAVITY_VIS_RATE: f32 = 0.5;
 const GRAVITY_VIS_MASS_FACTOR: f32 = 1.0015;
 const GRAVITY_VIS_SIZE: f32 = 30.0;
 
+const SCORE_BOUNDS_MIN: f32 = 10.0;
+const SCORE_BOUNDS_MAX: f32 = 80.0;
+const SCORE_ASTEROID_RADIUS_MIN: f32 = 4.0;
+const SCORE_ASTEROID_RADIUS_MAX: f32 = 20.0;
 const GAMEOVER_DELAY_MS: u64 = 3000;
 
 #[derive(Clone, Eq, PartialEq, Debug, Hash)]
@@ -156,6 +161,9 @@ struct GravityVis {
 }
 
 #[derive(Component)]
+struct ScoreText;
+
+#[derive(Component)]
 struct DebugPlanetData;
 
 fn setup_camera(mut commands: Commands) {
@@ -196,7 +204,7 @@ fn teardown_title(mut commands: Commands, entities: Query<Entity, With<Text>>) {
     }
 }
 
-fn setup_playing(mut commands: Commands, mut game: ResMut<Game>) {
+fn setup_playing(mut commands: Commands, mut game: ResMut<Game>, asset_server: Res<AssetServer>) {
     let player_start = Vec3::new(0.0, 300.0, 0.0);
     commands.spawn((Ship { fire_delay: Duration::from_millis(0) },
                     Radius(SHIP_RADIUS),
@@ -209,6 +217,24 @@ fn setup_playing(mut commands: Commands, mut game: ResMut<Game>) {
                     Mass(PLANET_START_MASS),
                     Transform::from_xyz(0.0, 0.0, 0.0),
                     GravityVis { radius: 0.0 } ));
+
+    let font = asset_server.load("LASER_REGULAR.otf");
+    let text_style = TextStyle {
+        font,
+        font_size: 30.0,
+        color: Color::WHITE,
+    };
+    let text_alignment = TextAlignment::CENTER;
+
+    commands.spawn(
+        (Text2dBundle {
+            text: Text::from_section("", text_style.clone())
+                .with_alignment(text_alignment),
+            transform: Transform::from_xyz(0.0, 330.0, 0.0),
+            ..default()
+        },
+        ScoreText)
+    );
 
     game.gameover_time = 0;
     game.score = 0;
@@ -229,7 +255,14 @@ fn check_player(mut state: ResMut<State<GameState>>, query: Query<&Ship>, planet
         if game.gameover_time >= GAMEOVER_DELAY_MS {
             state.set(GameState::GameOver).unwrap();
         }
+    } else {
+        game.time += time.delta().as_millis() as u64;
     }
+}
+
+fn update_score(mut query: Query<&mut Text, With<ScoreText>>, game: Res<Game>) {
+    let mut score_text = query.single_mut();
+    score_text.sections[0].value = format!("Score: {}", game.score.to_formatted_string(&Locale::en));
 }
 
 fn teardown_playing(mut commands: Commands, entities: Query<Entity, Or<(With<Ship>, With<Planet>, With<Bullet>, With<Asteroid>, With<Explosion>, With<TrailLine>, With<Text>)>>) {
@@ -238,7 +271,7 @@ fn teardown_playing(mut commands: Commands, entities: Query<Entity, Or<(With<Shi
     }
 }
 
-fn setup_gameover(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup_gameover(mut commands: Commands, asset_server: Res<AssetServer>, game: Res<Game>) {
     let font = asset_server.load("LASER_REGULAR.otf");
     let text_style = TextStyle {
         font,
@@ -253,6 +286,22 @@ fn setup_gameover(mut commands: Commands, asset_server: Res<AssetServer>) {
                 .with_alignment(text_alignment),
             ..default()
         }
+    );
+
+    let font = asset_server.load("LASER_REGULAR.otf");
+    let text_style = TextStyle {
+        font,
+        font_size: 30.0,
+        color: Color::WHITE,
+    };
+    commands.spawn(
+        (Text2dBundle {
+            text: Text::from_section(format!("Score: {}", game.score.to_formatted_string(&Locale::en)), text_style.clone())
+                .with_alignment(text_alignment),
+            transform: Transform::from_xyz(0.0, -40.0, 0.0),
+            ..default()
+        },
+        ScoreText)
     );
 }
 
@@ -284,19 +333,19 @@ fn lifetime_control(mut commands: Commands, time: Res<Time>, mut query: Query<(E
     }
 }
 
-fn ship_control(mut query: Query<(&mut Transform, &mut Velocity), With<Ship>>, keyboard_input: Res<Input<KeyCode>>, mut game: ResMut<Game>) {
+fn ship_control(mut query: Query<(&mut Transform, &mut Velocity), With<Ship>>, keyboard_input: Res<Input<KeyCode>>, mut game: ResMut<Game>, time: Res<Time>) {
     for (mut transform, mut velocity) in &mut query {
         let mut direction = 0.0;
         if keyboard_input.pressed(KeyCode::Left) {
-           direction = SHIP_ROTATION_SPEED;
+           direction = SHIP_ROTATION_SPEED * time.delta_seconds();
         }
         if keyboard_input.pressed(KeyCode::Right) {
-           direction = -SHIP_ROTATION_SPEED;  
+           direction = -SHIP_ROTATION_SPEED * time.delta_seconds();  
         }
         transform.rotation = transform.rotation * Quat::from_rotation_z(direction);
 
         if keyboard_input.pressed(KeyCode::Up) {
-            let thrust = transform.rotation * Vec3{ x: 0.0, y: SHIP_MAX_THRUST, z: 0.0};
+            let thrust = transform.rotation * Vec3{ x: 0.0, y: SHIP_MAX_THRUST, z: 0.0 } * time.delta_seconds();
             velocity.x += thrust.x;
             velocity.y += thrust.y;
         }
@@ -419,7 +468,7 @@ fn planet_collapse(mut planets: Query<(&mut Planet, &mut Radius, &mut Mass)>, ti
     }
 }
 
-fn asteroid_collision(mut commands: Commands, asteroid_query: Query<(Entity, &Radius, &Mass, &Transform, &Velocity), With<Asteroid>>, bullet_query: Query<(Entity, &Radius, &Transform), With<Bullet>>) {
+fn asteroid_collision(mut commands: Commands, asteroid_query: Query<(Entity, &Radius, &Mass, &Transform, &Velocity), With<Asteroid>>, bullet_query: Query<(Entity, &Radius, &Transform), With<Bullet>>, mut game: ResMut<Game>) {
     for (asteroid_entity, asteroid_radius, asteroid_mass, asteroid_transform, asteroid_velocity) in &asteroid_query {
         let asteroid_radius = **asteroid_radius;
         let asteroid_mass = **asteroid_mass;
@@ -433,6 +482,10 @@ fn asteroid_collision(mut commands: Commands, asteroid_query: Query<(Entity, &Ra
                                 Transform::from_translation(asteroid_transform.translation),
                                 Velocity(Vec2::new(asteroid_velocity.x, asteroid_velocity.y)),
                                 Lifetime(Duration::from_millis(EXPLOSION_MAX_LIFE_MS))));
+
+                let score_factor = (asteroid_radius - SCORE_ASTEROID_RADIUS_MIN) / (SCORE_ASTEROID_RADIUS_MAX - SCORE_ASTEROID_RADIUS_MIN);
+                let score = (1.0 - score_factor) * (SCORE_BOUNDS_MAX - SCORE_BOUNDS_MIN);
+                game.score += score as u32;
                 if asteroid_radius > ASTEROID_FRACTURE_MIN_RADIUS {
                     let mut rng = rand::thread_rng();
                     let new_radius = asteroid_radius * ASTEROID_FRACTURE_RADIUS_FACTOR;
@@ -684,6 +737,7 @@ fn main() {
         .with_system(asteroid_spawner)
         .with_system(planet_collapse)
         .with_system(update_gravity_vis)
+        .with_system(update_score)
         .with_system(check_player)
 
         .with_system(ship_render)
