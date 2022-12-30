@@ -19,7 +19,7 @@ const ASTEROID_RADIUS_VARIANCE: f32 = 2.0;
 const GRAVITY: f32 = 250.0;
 
 const SHIP_ROTATION_SPEED: f32 = 4.2;
-const SHIP_MAX_THRUST: f32 = 75.0;
+const SHIP_MAX_THRUST: f32 = 55.0;
 const SHIP_RADIUS: f32 = 10.0;
 const SHIP_MASS: f32 = 10.0;
 const SHIP_FIRE_DELAY: u64 = 100;
