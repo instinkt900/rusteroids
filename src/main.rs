@@ -26,6 +26,8 @@ const GAME_OVER_COLOR: Color = Color::hsl(351.0, 0.68, 0.53);
 const GAME_OVER_SCORE_COLOR: Color = Color::hsl(351.0, 0.68, 0.53);
 const SHIP_COLOR: Color = Color::hsl(171.0, 0.68, 0.53);
 const SHIP_TRAIL_COLOR: Color = Color::hsla(171.0, 0.68, 0.53, 0.5);
+const SHIP_HELP_COLOR: Color = Color::hsla(12.0, 0.78, 0.55, 0.1);
+const SHIP_TELEPORT_READY_COLOR: Color = Color::hsl(351.0, 0.68, 0.53);
 const BULLET_COLOR: Color = Color::rgb(1.0, 1.0, 1.0);
 const ASTEROID_COLOR: Color = Color::hsl(128.0, 0.39, 0.40);
 const STAR_COLOR: Color = Color::hsl(67.00, 0.76, 0.79);
@@ -49,6 +51,7 @@ const SHIP_MAX_THRUST: f32 = 55.0;
 const SHIP_RADIUS: f32 = 10.0;
 const SHIP_MASS: f32 = 10.0;
 const SHIP_FIRE_DELAY: u64 = 100;
+const SHIP_TELEPORT_COOLDOWN: f32 = 8.0;
 
 const BULLET_VELOCITY: f32 = 300.0;
 const BULLET_RADIUS: f32 = 1.0;
@@ -99,6 +102,10 @@ const SCORE_ASTEROID_RADIUS_MIN: f32 = 4.0;
 const SCORE_ASTEROID_RADIUS_MAX: f32 = 20.0;
 const GAMEOVER_DELAY_MS: u64 = 3000;
 
+const TELEPORT_FX_TIME: f32 = 0.6;
+const TELEPORT_FX_COLOR: Color = Color::rgba(1.0, 1.0, 1.0, 0.1);
+const TELEPORT_FX_SIZE: f32 = 150.0;
+
 #[derive(Clone, Eq, PartialEq, Debug, Hash)]
 enum GameState {
     Title,
@@ -114,7 +121,8 @@ struct Game {
     score: u32,
     time: u64,
     gameover_time: u64,
-    draw_trajectory: bool
+    draw_trajectory: bool,
+    clear_trail: bool
 }
 
 impl Game {
@@ -123,7 +131,8 @@ impl Game {
             score: 0,
             time: 0,
             gameover_time: 0,
-            draw_trajectory: false
+            draw_trajectory: false,
+            clear_trail: false
         }
     }
 }
@@ -142,7 +151,10 @@ struct Planet {
     collapsing: bool,
     collapse_init_size: f32,
     collapse_init_mass: f32,
-    collapse_timer: f32
+    collapse_timer: f32,
+    growth_factor: f32,
+    growth_target: f32,
+    growth_start: f32
 }
 
 impl Planet {
@@ -151,13 +163,28 @@ impl Planet {
             collapsing: false,
             collapse_init_size: 0.0,
             collapse_init_mass: 0.0,
-            collapse_timer: 0.0
+            collapse_timer: 0.0,
+            growth_factor: 0.0,
+            growth_target: 0.0,
+            growth_start: 0.0
         }
     }
 }
 
 #[derive(Component)]
-struct Ship { fire_delay: Duration }
+struct Ship {
+    fire_delay: Duration,
+    teleport_cooldown: f32
+}
+
+impl Ship {
+    fn new() -> Self {
+        Self {
+            fire_delay: Duration::from_millis(0),
+            teleport_cooldown: SHIP_TELEPORT_COOLDOWN
+        }
+    }
+}
 
 #[derive(Component)]
 struct Bullet;
@@ -198,6 +225,13 @@ struct DebugPlanetData;
 #[derive(Component)]
 struct Star;
 
+#[derive(Component)]
+struct TeleportFX {
+    enter: Vec3,
+    exit: Vec3,
+    factor: f32
+}
+
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2dBundle {
         transform: Transform::from_xyz(0.0, 0.0, 5.0),
@@ -237,7 +271,7 @@ fn teardown_title(mut commands: Commands, entities: Query<Entity, With<Text>>) {
 
 fn setup_playing(mut commands: Commands, mut game: ResMut<Game>, asset_server: Res<AssetServer>) {
     let player_start = Vec3::new(0.0, 300.0, 0.0);
-    commands.spawn((Ship { fire_delay: Duration::from_millis(0) },
+    commands.spawn((Ship::new(),
                     Radius(SHIP_RADIUS),
                     Mass(SHIP_MASS),
                     Transform::from_translation(player_start),
@@ -365,8 +399,8 @@ fn lifetime_control(mut commands: Commands, time: Res<Time>, mut query: Query<(E
     }
 }
 
-fn ship_control(mut query: Query<(&mut Transform, &mut Velocity, &mut AngularVelocity), With<Ship>>, keyboard_input: Res<Input<KeyCode>>, mut game: ResMut<Game>, time: Res<Time>) {
-    for (mut transform, mut velocity, mut ship_angular_velocity) in &mut query {
+fn ship_control(mut commands: Commands, mut query: Query<(&mut Transform, &mut Velocity, &mut AngularVelocity, &mut Ship)>, keyboard_input: Res<Input<KeyCode>>, mut game: ResMut<Game>, time: Res<Time>) {
+    for (mut transform, mut velocity, mut ship_angular_velocity, mut ship) in &mut query {
         let mut angular_velocity = **ship_angular_velocity;
         let mut apply_drag = true;
         if keyboard_input.pressed(KeyCode::Left) {
@@ -394,6 +428,24 @@ fn ship_control(mut query: Query<(&mut Transform, &mut Velocity, &mut AngularVel
             let thrust = transform.rotation * Vec3{ x: 0.0, y: SHIP_MAX_THRUST, z: 0.0 } * time.delta_seconds();
             velocity.x += thrust.x;
             velocity.y += thrust.y;
+        }
+
+        if ship.teleport_cooldown > 0.0 {
+            ship.teleport_cooldown -= time.delta_seconds();
+            ship.teleport_cooldown = ship.teleport_cooldown.max(0.0);
+        }
+
+        if ship.teleport_cooldown <= 0.0 && keyboard_input.just_pressed(KeyCode::X) {
+            let init_location = transform.translation;
+            transform.translation = -transform.translation;
+            **velocity = **velocity * -1.0;
+            ship.teleport_cooldown = SHIP_TELEPORT_COOLDOWN;
+            game.clear_trail = true;
+            commands.spawn(TeleportFX {
+                enter: init_location,
+                exit: transform.translation,
+                factor: 0.0
+            });
         }
     }
 
@@ -436,21 +488,25 @@ fn apply_velocity(mut query: Query<(&mut Transform, &Velocity)>, time: Res<Time>
     }
 }
 
-fn space_clamp(mut query: Query<&mut Transform, With<Ship>>, windows: Res<Windows>) {
+fn space_clamp(mut query: Query<&mut Transform, With<Ship>>, windows: Res<Windows>, mut game: ResMut<Game>) {
     let window_half_width = windows.get_primary().unwrap().width() / 2.0;
     let window_half_height = windows.get_primary().unwrap().height() / 2.0;
     for mut transform in &mut query {
         if transform.translation.x < -window_half_width {
             transform.translation.x = window_half_width + transform.translation.x % window_half_width;
+            game.clear_trail = true;
         }
         if transform.translation.x > window_half_width {
             transform.translation.x = -window_half_width + transform.translation.x % window_half_width;
+            game.clear_trail = true;
         }
         if transform.translation.y < -window_half_height {
             transform.translation.y = window_half_height + transform.translation.y % window_half_height;
+            game.clear_trail = true;
         }
         if transform.translation.y > window_half_height {
             transform.translation.y = -window_half_height + transform.translation.y % window_half_height;
+            game.clear_trail = true;
         }
     }
 }
@@ -473,8 +529,8 @@ fn fire_control(mut query: Query<(&mut Ship, &Transform)>, mut commands: Command
     }
 }
 
-fn planet_colision(mut commands: Commands, mut planet_query: Query<(&mut Radius, &mut Mass, &Transform, &mut Planet)>, entity_query: Query<(Entity, &Radius, &Mass, &Transform, Option<&Bullet>), Without<Planet>>) {
-    for (mut planet_radius, mut planet_mass, planet_transform, mut planet) in &mut planet_query {
+fn planet_colision(mut commands: Commands, mut planet_query: Query<(&Radius, &mut Mass, &Transform, &mut Planet)>, entity_query: Query<(Entity, &Radius, &Mass, &Transform, Option<&Bullet>), Without<Planet>>) {
+    for (planet_radius, mut planet_mass, planet_transform, mut planet) in &mut planet_query {
         let mut planet_radius_value = **planet_radius;
         let mut planet_mass_value = **planet_mass;
         for (entity, entity_radius, entity_mass, entity_transform, optional_bullet) in &entity_query {
@@ -490,14 +546,50 @@ fn planet_colision(mut commands: Commands, mut planet_query: Query<(&mut Radius,
             }
         }
 
-        if !planet.collapsing {
-            **planet_radius = planet_radius_value;
+        if !planet.collapsing && **planet_radius != planet_radius_value {
+            planet.growth_start = **planet_radius;
+            planet.growth_factor = 0.0;
+            planet.growth_target = planet_radius_value;
             **planet_mass = planet_mass_value;
             if **planet_mass >= PLANET_MASS_COLLAPSE_TRIGGER {
                 planet.collapsing = true;
                 planet.collapse_init_size = **planet_radius;
                 planet.collapse_init_mass = **planet_mass;
                 planet.collapse_timer = 0.0;
+            }
+        }
+    }
+}
+
+fn bounce(mut x: f32) -> f32 {
+    const N1: f32 = 7.5625;
+    const D1: f32 = 2.75;
+
+    if x < (1.0 / D1) {
+        return N1 * x * x;
+    } else if x < (2.0 / D1) {
+        x -= 1.5 / D1;
+        return N1 * x * x + 0.75;
+    } else if x < (2.5 / D1) {
+        x -= 2.25 / D1;
+        return N1 * x * x + 0.9375;
+    } else {
+        x -= 2.625 / D1;
+        return N1 * x * x + 0.984375;
+    }
+}
+
+fn planet_growth(mut planets: Query<(&mut Planet, &mut Radius)>, time: Res<Time>) {
+    for (mut planet, mut radius) in &mut planets {
+        if !planet.collapsing && planet.growth_factor < 1.0 {
+            if planet.growth_target < **radius {
+                planet.growth_target = **radius;
+                planet.growth_factor = 1.0;
+                planet.growth_start = **radius;
+            } else {
+                planet.growth_factor += 1.0 / 0.6 * time.delta_seconds();
+                planet.growth_factor = planet.growth_factor.min(1.0);
+                **radius = planet.growth_start + (planet.growth_target - planet.growth_start) * bounce(planet.growth_factor);
             }
         }
     }
@@ -619,9 +711,9 @@ fn gravity_velocity(pos1: Vec3, mass1: f32, pos2: Vec3, mass2: f32) -> Vec2 {
     return Vec2::new(direction.x * force, direction.y * force);
 }
 
-fn ship_render(query: Query<(&Transform, &Mass, &Velocity), With<Ship>>, planet_query: Query<(&Transform, &Mass), With<Planet>>, mut lines: ResMut<DebugLines>, game: Res<Game>) {
-    let (planet_transform, Mass(planet_mass)) = planet_query.single();
-    for (transform, Mass(mass), Velocity(velocity)) in &query {
+fn ship_render(query: Query<(&Transform, &Mass, &Velocity, &Ship)>, planet_query: Query<(&Transform, &Mass, &Planet)>, mut lines: ResMut<DebugLines>, game: Res<Game>) {
+    let (planet_transform, Mass(planet_mass), planet) = planet_query.single();
+    for (transform, Mass(mass), Velocity(velocity), ship) in &query {
         let points: Vec<Vec3> = SHIP_CORNERS.iter().map(|point| transform.transform_point(*point)).collect();
         for i in 0..points.len() {
             let point1 = points[i];
@@ -629,7 +721,12 @@ fn ship_render(query: Query<(&Transform, &Mass, &Velocity), With<Ship>>, planet_
             lines.line_colored(point1, point2, 0.0, SHIP_COLOR);
         }
 
-        if game.draw_trajectory {
+        if ship.teleport_cooldown <= 0.0 {
+            let offset = transform.rotation * Vec3::new(0.0, -SHIP_RADIUS, 0.0 );
+            draw_circle(&mut lines, transform.translation + offset, 2.0, SHIP_TELEPORT_READY_COLOR, 5);
+        }
+
+        if game.draw_trajectory && !planet.collapsing {
             let step = 1.0 / 20.0;
             let mut pos = transform.translation;
             let mut vel = *velocity;
@@ -637,7 +734,7 @@ fn ship_render(query: Query<(&Transform, &Mass, &Velocity), With<Ship>>, planet_
             let mut cumulative_angle = 0.0;
             let orbit_radius = (planet_transform.translation - transform.translation).length();
             let orbit_circumference = 2.0 * std::f32::consts::PI * orbit_radius;
-            let mut distance = f32::max(900.0, orbit_circumference);
+            let mut distance = f32::max(9000.0, orbit_circumference);
             while distance > 0.0 {
                 let line_start = pos;
                 let added_velocity = gravity_velocity(planet_transform.translation, *planet_mass, pos, *mass);
@@ -655,7 +752,7 @@ fn ship_render(query: Query<(&Transform, &Mass, &Velocity), With<Ship>>, planet_
                 if cumulative_angle > (2.0 * std::f32::consts::PI) {
                     break;
                 }
-                lines.line_colored(line_start, pos, 0.0, Color::rgba(1.0, 1.0, 0.0, 0.1));
+                lines.line_colored(line_start, pos, 0.0, SHIP_HELP_COLOR);
             }
         }
     }
@@ -716,14 +813,17 @@ fn asteroid_render(query: Query<(&Radius, &Transform, &Asteroid)>, mut lines: Re
 
 fn draw_trail(mut commands: Commands, mut query: Query<(&Transform, &mut Trail)>) {
     for (transform, mut trail) in &mut query {
-        commands.spawn((TrailLine{ start: transform.translation, end: trail.last_pos, alpha: TRAIL_START_ALPHA },
-                        Lifetime(Duration::from_millis(TRAIL_MAX_LIFE_MS))));
+        let line_distance = Vec3::distance(trail.last_pos, transform.translation);
+        if line_distance < 10.0 { // dont spawn lines if we make large jumps in distance (teleports)
+            commands.spawn((TrailLine{ start: transform.translation, end: trail.last_pos, alpha: TRAIL_START_ALPHA },
+                            Lifetime(Duration::from_millis(TRAIL_MAX_LIFE_MS))));
+        }
         trail.last_pos = transform.translation;
     }
 }
 
-fn draw_trail_lines(query: Query<(&TrailLine, &Lifetime)>, mut lines: ResMut<DebugLines>) {
-    for (line, lifetime) in &query {
+fn draw_trail_lines(query: Query<(Entity, &TrailLine, &Lifetime)>, mut lines: ResMut<DebugLines>) {
+    for (_entity, line, lifetime) in &query {
         let alpha = line.alpha * (lifetime.as_millis() as f32 / TRAIL_MAX_LIFE_MS as f32);
         let color = Color::rgba(SHIP_TRAIL_COLOR.r(), SHIP_TRAIL_COLOR.g(), SHIP_TRAIL_COLOR.b(), SHIP_TRAIL_COLOR.a() * alpha);
         lines.line_colored(line.start, line.end, 0.0, color);
@@ -740,24 +840,24 @@ fn draw_explosion(query: Query<(&Transform, &Lifetime), With<Explosion>>, mut li
     }
 }
 
-fn update_gravity_vis(mut query: Query<(&Planet, &Mass, &mut GravityVis)>, time: Res<Time>) {
-    for (planet, Mass(mass), mut gravity_vis) in &mut query {
-        if !planet.collapsing {
-            let shrink = time.delta_seconds() * GRAVITY_VIS_RATE * GRAVITY_VIS_MASS_FACTOR.powf(*mass - PLANET_START_MASS);
-            if gravity_vis.radius > shrink {
-                gravity_vis.radius -= shrink;
-            } else {
-                let remainder = shrink % 1.0;
-                gravity_vis.radius = 1.0 - remainder;
-            }
+fn update_gravity_vis(mut query: Query<(&Mass, &mut GravityVis)>, time: Res<Time>) {
+    for (Mass(mass), mut gravity_vis) in &mut query {
+        let shrink = time.delta_seconds() * GRAVITY_VIS_RATE * GRAVITY_VIS_MASS_FACTOR.powf(*mass - PLANET_START_MASS);
+        if gravity_vis.radius > shrink {
+            gravity_vis.radius -= shrink;
+        } else {
+            let remainder = shrink % 1.0;
+            gravity_vis.radius = 1.0 - remainder;
         }
     }
 }
 
-fn visualise_gravity(query: Query<(&Transform, &Radius, &GravityVis)>, mut lines: ResMut<DebugLines>) {
-    for (transform, Radius(radius), gravity_vis) in &query {
-        let radius = radius + GRAVITY_VIS_SIZE * gravity_vis.radius;
-        draw_circle(&mut lines, transform.translation, radius, Color::rgba(1.0, 1.0, 1.0, 0.05), 40);
+fn visualise_gravity(query: Query<(&Planet, &Transform, &Radius, &GravityVis)>, mut lines: ResMut<DebugLines>) {
+    for (planet, transform, Radius(radius), gravity_vis) in &query {
+        if !planet.collapsing {
+            let radius = radius + GRAVITY_VIS_SIZE * gravity_vis.radius;
+            draw_circle(&mut lines, transform.translation, radius, Color::rgba(1.0, 1.0, 1.0, 0.05), 40);
+        }
     }
 }
 
@@ -783,6 +883,22 @@ fn draw_stars(player_query: Query<&Transform, With<Ship>>, query: Query<&Transfo
     for transform in &query {
         let star_location = transform.translation - star_offset;
         draw_circle(&mut lines, star_location, 1.0, BACKGROUND_STAR_COLOR, 2);
+    }
+}
+
+fn render_teleport_fx(mut commands: Commands, mut query: Query<(Entity, &mut TeleportFX)>, mut lines: ResMut<DebugLines>, time: Res<Time>) {
+    for (entity, mut teleport_fx) in &mut query {
+        teleport_fx.factor += (1.0 / TELEPORT_FX_TIME) * time.delta_seconds();
+        teleport_fx.factor = teleport_fx.factor.min(1.0);
+        let factor = f32::clamp(1.0 - (1.0 - teleport_fx.factor) * (1.0 - teleport_fx.factor), 0.0, 1.0);
+        let enter_color = Color::rgba(TELEPORT_FX_COLOR.r(), TELEPORT_FX_COLOR.g(), TELEPORT_FX_COLOR.b(), TELEPORT_FX_COLOR.a() * (1.0 - factor));
+        let exit_color = Color::rgba(TELEPORT_FX_COLOR.r(), TELEPORT_FX_COLOR.g(), TELEPORT_FX_COLOR.b(), TELEPORT_FX_COLOR.a() * factor);
+        draw_circle(&mut lines, teleport_fx.enter, TELEPORT_FX_SIZE * factor, enter_color, 20);
+        draw_circle(&mut lines, teleport_fx.exit, TELEPORT_FX_SIZE * (1.0 - factor), exit_color, 20);
+
+        if teleport_fx.factor >= 1.0 {
+            commands.entity(entity).despawn_recursive();
+        }
     }
 }
 
@@ -817,6 +933,7 @@ fn main() {
         .with_system(lifetime_control)
         .with_system(space_clamp)
         .with_system(asteroid_spawner)
+        .with_system(planet_growth)
         .with_system(planet_collapse)
         .with_system(update_gravity_vis)
         .with_system(update_score)
@@ -831,6 +948,7 @@ fn main() {
         .with_system(draw_trail_lines)
         .with_system(draw_explosion)
         .with_system(visualise_gravity)
+        .with_system(render_teleport_fx)
     )
     .add_system_set(SystemSet::on_exit(GameState::Playing).with_system(teardown_playing))
     .add_system_set(SystemSet::on_enter(GameState::GameOver).with_system(setup_gameover))
