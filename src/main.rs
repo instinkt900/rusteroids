@@ -4,6 +4,7 @@ use bevy_prototype_debug_lines::*;
 use rand_pcg::Pcg32;
 use rand::{Rng, SeedableRng};
 use num_format::{Locale, ToFormattedString};
+use bevy::window::PresentMode;
 
 // drawing constants
 const SHIP_CORNERS: [Vec3; 3] = [
@@ -15,6 +16,29 @@ const PLANET_POINT_COUNT: u32 = 80;
 const ASTEROID_POINT_COUNT: u32 = 15;
 const BULLET_POINT_COUNT: u32 = 4;
 const ASTEROID_RADIUS_VARIANCE: f32 = 2.0;
+
+const GAME_NAME: &str = "SCHWARZSCHILD";
+
+const BACKGROUND_COLOR: Color = Color::rgb(0.0,0.0,0.0);
+const TITLE_COLOR: Color = Color::hsl(351.0, 0.68, 0.53);
+const SCORE_COLOR: Color = Color::hsl(351.0, 0.68, 0.53);
+const GAME_OVER_COLOR: Color = Color::hsl(351.0, 0.68, 0.53);
+const GAME_OVER_SCORE_COLOR: Color = Color::hsl(351.0, 0.68, 0.53);
+const SHIP_COLOR: Color = Color::hsl(171.0, 0.68, 0.53);
+const SHIP_TRAIL_COLOR: Color = Color::hsla(171.0, 0.68, 0.53, 0.5);
+const BULLET_COLOR: Color = Color::rgb(1.0, 1.0, 1.0);
+const ASTEROID_COLOR: Color = Color::hsl(128.0, 0.39, 0.40);
+const STAR_COLOR: Color = Color::hsl(67.00, 0.76, 0.79);
+const BACKGROUND_STAR_COLOR: Color = Color::rgba(1.0, 1.0, 1.0, 0.15);
+
+const BACKGROUND_STAR_COUNT: u32 = 65;
+const BACKGROUND_STAR_PARALLAX: f32 = 0.07;
+
+const FONT_PATH: &str = "Netron.otf";
+const TITLE_SIZE: f32 = 120.0;
+const SCORE_SIZE: f32 = 30.0;
+const GAME_OVER_SIZE: f32 = 60.0;
+const GAME_OVER_SCORE_SIZE: f32 = 30.0;
 
 const GRAVITY: f32 = 250.0;
 
@@ -166,6 +190,9 @@ struct ScoreText;
 #[derive(Component)]
 struct DebugPlanetData;
 
+#[derive(Component)]
+struct Star;
+
 fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2dBundle {
         transform: Transform::from_xyz(0.0, 0.0, 5.0),
@@ -174,17 +201,17 @@ fn setup_camera(mut commands: Commands) {
 }
 
 fn setup_title(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let font = asset_server.load("LASER_REGULAR.otf");
+    let font = asset_server.load(FONT_PATH);
     let text_style = TextStyle {
         font,
-        font_size: 120.0,
-        color: Color::WHITE,
+        font_size: TITLE_SIZE,
+        color: TITLE_COLOR,
     };
     let text_alignment = TextAlignment::CENTER;
 
     commands.spawn(
         Text2dBundle {
-            text: Text::from_section("SCHWARZSCHILD", text_style.clone())
+            text: Text::from_section(GAME_NAME, text_style.clone())
                 .with_alignment(text_alignment),
             ..default()
         }
@@ -200,7 +227,6 @@ fn update_title(mut state: ResMut<State<GameState>>, keyboard_input: Res<Input<K
 fn teardown_title(mut commands: Commands, entities: Query<Entity, With<Text>>) {
     for entity in &entities {
         commands.entity(entity).despawn_recursive();
-        println!("deleted entity...");
     }
 }
 
@@ -218,11 +244,11 @@ fn setup_playing(mut commands: Commands, mut game: ResMut<Game>, asset_server: R
                     Transform::from_xyz(0.0, 0.0, 0.0),
                     GravityVis { radius: 0.0 } ));
 
-    let font = asset_server.load("LASER_REGULAR.otf");
+    let font = asset_server.load(FONT_PATH);
     let text_style = TextStyle {
         font,
-        font_size: 30.0,
-        color: Color::WHITE,
+        font_size: SCORE_SIZE,
+        color: SCORE_COLOR,
     };
     let text_alignment = TextAlignment::CENTER;
 
@@ -272,11 +298,11 @@ fn teardown_playing(mut commands: Commands, entities: Query<Entity, Or<(With<Shi
 }
 
 fn setup_gameover(mut commands: Commands, asset_server: Res<AssetServer>, game: Res<Game>) {
-    let font = asset_server.load("LASER_REGULAR.otf");
+    let font = asset_server.load(FONT_PATH);
     let text_style = TextStyle {
         font,
-        font_size: 60.0,
-        color: Color::WHITE,
+        font_size: GAME_OVER_SIZE,
+        color: GAME_OVER_COLOR,
     };
     let text_alignment = TextAlignment::CENTER;
 
@@ -288,11 +314,11 @@ fn setup_gameover(mut commands: Commands, asset_server: Res<AssetServer>, game: 
         }
     );
 
-    let font = asset_server.load("LASER_REGULAR.otf");
+    let font = asset_server.load(FONT_PATH);
     let text_style = TextStyle {
         font,
-        font_size: 30.0,
-        color: Color::WHITE,
+        font_size: GAME_OVER_SCORE_SIZE,
+        color: GAME_OVER_SCORE_COLOR,
     };
     commands.spawn(
         (Text2dBundle {
@@ -580,7 +606,7 @@ fn ship_render(query: Query<(&Transform, &Mass, &Velocity), With<Ship>>, planet_
         for i in 0..points.len() {
             let point1 = points[i];
             let point2 = points[(i + 1) % points.len()];
-            lines.line_colored(point1, point2, 0.0, Color::GREEN);
+            lines.line_colored(point1, point2, 0.0, SHIP_COLOR);
         }
 
         if game.draw_trajectory {
@@ -641,14 +667,14 @@ fn draw_irregular_circle(lines: &mut ResMut<DebugLines>, seed: u64, position: Ve
         lines.line_colored(prev_point, this_point, 0.0, color);
         prev_point = this_point;
     }
-    lines.line_colored(prev_point, first_point, 0.0, Color::GREEN);
+    lines.line_colored(prev_point, first_point, 0.0, color);
 }
 
 fn planet_render(query: Query<(&Radius, &Transform), With<Planet>>, mut lines: ResMut<DebugLines>) {
     for (planet_radius, transform) in &query {
         let position = transform.translation;
         let radius = **planet_radius;
-        draw_circle(&mut lines, position, radius, Color::GREEN, PLANET_POINT_COUNT);
+        draw_circle(&mut lines, position, radius, STAR_COLOR, PLANET_POINT_COUNT);
     }
 }
 
@@ -656,7 +682,7 @@ fn bullet_render(query: Query<(&Radius, &Transform), With<Bullet>>, mut lines: R
     for (radius, transform) in &query {
         let position = transform.translation;
         let radius = **radius;
-        draw_circle(&mut lines, position, radius, Color::GREEN, BULLET_POINT_COUNT);
+        draw_circle(&mut lines, position, radius, BULLET_COLOR, BULLET_POINT_COUNT);
     }
 }
 
@@ -664,7 +690,7 @@ fn asteroid_render(query: Query<(&Radius, &Transform, &Asteroid)>, mut lines: Re
     for (radius, transform, asteroid) in &query {
         let position = transform.translation;
         let radius = **radius;
-        draw_irregular_circle(&mut lines, asteroid.seed, position, radius - ASTEROID_RADIUS_VARIANCE, radius + ASTEROID_RADIUS_VARIANCE, Color::GREEN, ASTEROID_POINT_COUNT);
+        draw_irregular_circle(&mut lines, asteroid.seed, position, radius - ASTEROID_RADIUS_VARIANCE, radius + ASTEROID_RADIUS_VARIANCE, ASTEROID_COLOR, ASTEROID_POINT_COUNT);
     }
 }
 
@@ -679,7 +705,8 @@ fn draw_trail(mut commands: Commands, mut query: Query<(&Transform, &mut Trail)>
 fn draw_trail_lines(query: Query<(&TrailLine, &Lifetime)>, mut lines: ResMut<DebugLines>) {
     for (line, lifetime) in &query {
         let alpha = line.alpha * (lifetime.as_millis() as f32 / TRAIL_MAX_LIFE_MS as f32);
-        lines.line_colored(line.start, line.end, 0.0, Color::rgba(1.0, 1.0, 1.0, alpha));
+        let color = Color::rgba(SHIP_TRAIL_COLOR.r(), SHIP_TRAIL_COLOR.g(), SHIP_TRAIL_COLOR.b(), SHIP_TRAIL_COLOR.a() * alpha);
+        lines.line_colored(line.start, line.end, 0.0, color);
     }
 }
 
@@ -693,14 +720,16 @@ fn draw_explosion(query: Query<(&Transform, &Lifetime), With<Explosion>>, mut li
     }
 }
 
-fn update_gravity_vis(mut query: Query<(&Mass, &mut GravityVis)>, time: Res<Time>) {
-    for (Mass(mass), mut gravity_vis) in &mut query {
-        let shrink = time.delta_seconds() * GRAVITY_VIS_RATE * GRAVITY_VIS_MASS_FACTOR.powf(*mass - PLANET_START_MASS);
-        if gravity_vis.radius > shrink {
-            gravity_vis.radius -= shrink;
-        } else {
-            let remainder = shrink % 1.0;
-            gravity_vis.radius = 1.0 - remainder;
+fn update_gravity_vis(mut query: Query<(&Planet, &Mass, &mut GravityVis)>, time: Res<Time>) {
+    for (planet, Mass(mass), mut gravity_vis) in &mut query {
+        if !planet.collapsing {
+            let shrink = time.delta_seconds() * GRAVITY_VIS_RATE * GRAVITY_VIS_MASS_FACTOR.powf(*mass - PLANET_START_MASS);
+            if gravity_vis.radius > shrink {
+                gravity_vis.radius -= shrink;
+            } else {
+                let remainder = shrink % 1.0;
+                gravity_vis.radius = 1.0 - remainder;
+            }
         }
     }
 }
@@ -712,10 +741,43 @@ fn visualise_gravity(query: Query<(&Transform, &Radius, &GravityVis)>, mut lines
     }
 }
 
+fn setup_stars(mut commands: Commands, windows: Res<Windows>) {
+    let star_count = BACKGROUND_STAR_COUNT;
+    let window_half_width = windows.get_primary().unwrap().width() / 2.0;
+    let window_half_height = windows.get_primary().unwrap().height() / 2.0;
+    let mut rng = rand::thread_rng();
+    for _i in 0..star_count {
+        let x = rng.gen_range(-window_half_width..window_half_width);
+        let y = rng.gen_range(-window_half_height..window_half_height);
+        commands.spawn((Star, Transform::from_xyz(x, y, 0.0)));
+    }
+}
+
+fn draw_stars(player_query: Query<&Transform, With<Ship>>, query: Query<&Transform, With<Star>>, mut lines: ResMut<DebugLines>) {
+    let mut star_offset = Vec3::new(0.0, 0.0, 0.0);
+    if !player_query.is_empty() {
+        let player_transform = player_query.single();
+        star_offset = player_transform.translation * BACKGROUND_STAR_PARALLAX;
+    }
+    
+    for transform in &query {
+        let star_location = transform.translation - star_offset;
+        draw_circle(&mut lines, star_location, 1.0, BACKGROUND_STAR_COLOR, 2);
+    }
+}
+
 fn main() {
     App::new()
-    .add_plugins(DefaultPlugins)
+    .add_plugins(DefaultPlugins.set(WindowPlugin {
+            window: WindowDescriptor {
+                title: GAME_NAME.to_string(),
+                present_mode: PresentMode::AutoVsync,
+                ..default()
+            },
+            ..default()
+        }))
     .add_plugin(DebugLinesPlugin::default())
+    .insert_resource(ClearColor(BACKGROUND_COLOR))
     .insert_resource(Game::new())
     .insert_resource(AsteroidTimer{ duration: Duration::from_secs(5) })
     .add_state(GameState::Title)
@@ -723,7 +785,7 @@ fn main() {
     .add_system_set(SystemSet::on_enter(GameState::Title).with_system(setup_title))
     .add_system_set(SystemSet::on_update(GameState::Title).with_system(update_title))
     .add_system_set(SystemSet::on_exit(GameState::Title).with_system(teardown_title))
-    .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(setup_playing))
+    .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(setup_playing).with_system(setup_stars))
     .add_system_set(SystemSet::on_update(GameState::Playing)
         .with_system(ship_control)
         .with_system(apply_gravity)
@@ -740,6 +802,7 @@ fn main() {
         .with_system(update_score)
         .with_system(check_player)
 
+        .with_system(draw_stars)
         .with_system(ship_render)
         .with_system(planet_render)
         .with_system(bullet_render)
