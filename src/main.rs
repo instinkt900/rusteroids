@@ -106,6 +106,10 @@ const TELEPORT_FX_TIME: f32 = 0.6;
 const TELEPORT_FX_COLOR: Color = Color::rgba(1.0, 1.0, 1.0, 0.1);
 const TELEPORT_FX_SIZE: f32 = 150.0;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION_SIZE: f32 = 20.0;
+const VERSION_COLOR: Color = Color::hsl(351.0, 0.68, 0.53);
+
 #[derive(Clone, Eq, PartialEq, Debug, Hash)]
 enum GameState {
     Title,
@@ -239,7 +243,7 @@ fn setup_camera(mut commands: Commands) {
     });
 }
 
-fn setup_title(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup_title(mut commands: Commands, asset_server: Res<AssetServer>, windows: Res<Windows>) {
     let font = asset_server.load(FONT_PATH);
     let text_style = TextStyle {
         font,
@@ -252,6 +256,25 @@ fn setup_title(mut commands: Commands, asset_server: Res<AssetServer>) {
         Text2dBundle {
             text: Text::from_section(GAME_NAME, text_style.clone())
                 .with_alignment(text_alignment),
+            ..default()
+        }
+    );
+
+    let font = asset_server.load(FONT_PATH);
+    let text_style = TextStyle {
+        font,
+        font_size: VERSION_SIZE,
+        color: VERSION_COLOR,
+    };
+    let text_alignment = TextAlignment::BOTTOM_RIGHT;
+
+    let window_half_width = windows.get_primary().unwrap().width() / 2.0;
+    let window_half_height = windows.get_primary().unwrap().height() / 2.0;
+    commands.spawn(
+        Text2dBundle {
+            text: Text::from_section(VERSION, text_style.clone())
+                .with_alignment(text_alignment),
+            transform: Transform::from_xyz(window_half_width - 20.0, -window_half_height + 10.0, 0.0),
             ..default()
         }
     );
