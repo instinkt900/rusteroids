@@ -42,6 +42,8 @@ const GAME_OVER_SCORE_SIZE: f32 = 30.0;
 
 const GRAVITY: f32 = 250.0;
 
+const SHIP_ROTATION_ACCEL: f32 = 25.0;
+const SHIP_ROTATION_DECEL: f32 = 50.0;
 const SHIP_ROTATION_SPEED: f32 = 4.2;
 const SHIP_MAX_THRUST: f32 = 55.0;
 const SHIP_RADIUS: f32 = 10.0;
@@ -166,6 +168,9 @@ struct Asteroid { seed: u64 }
 #[derive(Component, Deref, DerefMut)]
 struct Velocity(Vec2);
 
+#[derive(Component, Deref, DerefMut)]
+struct AngularVelocity(f32);
+
 #[derive(Component)]
 struct Trail { last_pos: Vec3 }
 
@@ -237,6 +242,7 @@ fn setup_playing(mut commands: Commands, mut game: ResMut<Game>, asset_server: R
                     Mass(SHIP_MASS),
                     Transform::from_translation(player_start),
                     Velocity(Vec2::new(0.0,0.0)),
+                    AngularVelocity(0.0),
                     Trail { last_pos: player_start }));
     commands.spawn((Planet::new(),
                     Radius(PLANET_START_RADIUS),
@@ -359,16 +365,30 @@ fn lifetime_control(mut commands: Commands, time: Res<Time>, mut query: Query<(E
     }
 }
 
-fn ship_control(mut query: Query<(&mut Transform, &mut Velocity), With<Ship>>, keyboard_input: Res<Input<KeyCode>>, mut game: ResMut<Game>, time: Res<Time>) {
-    for (mut transform, mut velocity) in &mut query {
-        let mut direction = 0.0;
+fn ship_control(mut query: Query<(&mut Transform, &mut Velocity, &mut AngularVelocity), With<Ship>>, keyboard_input: Res<Input<KeyCode>>, mut game: ResMut<Game>, time: Res<Time>) {
+    for (mut transform, mut velocity, mut ship_angular_velocity) in &mut query {
+        let mut angular_velocity = **ship_angular_velocity;
+        let mut apply_drag = true;
         if keyboard_input.pressed(KeyCode::Left) {
-           direction = SHIP_ROTATION_SPEED * time.delta_seconds();
+           angular_velocity += SHIP_ROTATION_ACCEL * time.delta_seconds();
+           apply_drag = false;
         }
         if keyboard_input.pressed(KeyCode::Right) {
-           direction = -SHIP_ROTATION_SPEED * time.delta_seconds();  
+           angular_velocity += -SHIP_ROTATION_ACCEL * time.delta_seconds();  
+           apply_drag = false;
         }
-        transform.rotation = transform.rotation * Quat::from_rotation_z(direction);
+        angular_velocity = angular_velocity.clamp(-SHIP_ROTATION_SPEED, SHIP_ROTATION_SPEED);
+        transform.rotation = transform.rotation * Quat::from_rotation_z(angular_velocity * time.delta_seconds());
+        if apply_drag {
+            if angular_velocity > 0.0 {
+                angular_velocity -= SHIP_ROTATION_DECEL * time.delta_seconds();
+                angular_velocity = angular_velocity.max(0.0);
+            } else if angular_velocity < 0.0 {
+                angular_velocity += SHIP_ROTATION_DECEL * time.delta_seconds();
+                angular_velocity = angular_velocity.min(0.0);
+            }
+        }
+        **ship_angular_velocity = angular_velocity;
 
         if keyboard_input.pressed(KeyCode::Up) {
             let thrust = transform.rotation * Vec3{ x: 0.0, y: SHIP_MAX_THRUST, z: 0.0 } * time.delta_seconds();
